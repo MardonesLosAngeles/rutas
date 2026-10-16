@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("🗺️ Optimización de Rutas de Ventas por Geolocalización")
-st.subheader("Los Ángeles, Chile — Motor de Ruta Óptima (TSP + Geolocalización Gratuita)")
+st.subheader("Los Ángeles, Chile)")
 
 # --- FUNCIONES DE GEOLOCALIZACIÓN Y OPTIMIZACIÓN ---
 
