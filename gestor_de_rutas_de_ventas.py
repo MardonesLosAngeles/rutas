@@ -13,8 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🗺️ Optimización de Rutas de Ventas por Geolocalización")
-st.subheader("Los Ángeles, Chile — Motor de Ruta Óptima (TSP + Geolocalización Gratuita)")
+st.title("🗺️ Optimización y Control de Rutas de Ventas")
+st.subheader("Los Ángeles, Chile — Mapa Interactivo y Hoja de Ruta Secuencial")
 
 # --- FUNCIONES DE LIMPIEZA Y GEOLOCALIZACIÓN ---
 
@@ -27,13 +27,9 @@ def clean_address_text(address_raw):
         return ""
     
     text = address_raw.upper()
-    # Eliminar notas entre paréntesis ej. (MAQ.CONS)
-    text = re.sub(r'\(.*?\)', '', text)
-    # Eliminar textos de villas o poblaciones después de la coma
-    text = re.sub(r',.*', '', text)
-    # Reemplazar abreviaturas comunes como N., NN., #, POB., VILLA
+    text = re.sub(r'\(.*?\)', '', text) # Eliminar textos entre paréntesis
+    text = re.sub(r',.*', '', text)     # Eliminar información tras la coma
     text = re.sub(r'\b(N°|NN\.|N\.|#|POB\.|VILLA|SECTOR)\b', '', text)
-    # Limpiar espacios múltiples
     text = " ".join(text.split())
     return text
 
@@ -97,10 +93,12 @@ def calculate_haversine_distance(lat1, lon1, lat2, lon2):
 def optimize_route_order(df_subset):
     """
     Algoritmo del Vecino Más Cercano (Nearest Neighbor)
-    para ordenar los puntos secuencialmente de forma óptima.
+    para ordenar los puntos secuencialmente por menor distancia.
     """
     if len(df_subset) <= 1:
-        return df_subset
+        df_res = df_subset.copy().reset_index(drop=True)
+        df_res['Orden_Secuencial'] = range(1, len(df_res) + 1)
+        return df_res
 
     unvisited = df_subset.copy().reset_index(drop=True)
     ordered_indices = [0]
@@ -143,21 +141,21 @@ if uploaded_file is not None:
     df_clean.columns = ['ID', 'Nombre', 'Direccion', 'Comuna', 'Tipo', 'Status']
     df_clean = df_clean[['Nombre', 'Direccion', 'Comuna', 'Tipo', 'Status']].dropna(subset=['Nombre', 'Direccion'])
     
-    st.success(f"✅ Archivo cargado correctamente ({len(df_clean)} clientes encontrados).")
+    st.success(f"✅ Archivo cargado correctamente ({len(df_clean)} clientes totales).")
     
     # Filtro de Grupo
     grupos = [
         "1. Ruta Prioritaria (2ª Visita / Interesados)", 
         "2. Nuevos con Compra", 
         "3. Resto de Clientes", 
-        "4. Locales Cerrados"
+        "4. Locales Cerrados / Inexistentes"
     ]
     selected_group = st.selectbox("Selecciona el Grupo de Clientes a Georreferenciar y Optimizar:", grupos)
     
-    if st.button("🚀 Georreferenciar y Calcular Ruta Óptima"):
-        with st.spinner("Geolocalizando direcciones en Los Ángeles y calculando la ruta de menor distancia..."):
+    if st.button("🚀 Georreferenciar y Generar Mapa de Ruta"):
+        with st.spinner("Filtrando grupo, geolocalizando en mapa y ordenando paradas..."):
             
-            # Filtrado según opción
+            # 1. Filtrado de grupo estricto
             if "1." in selected_group:
                 sub_df = df_clean[df_clean['Status'].astype(str).str.contains("VISITA|INTERESAD|SOLICITA|CREA", case=False, na=False)].copy()
             elif "2." in selected_group:
@@ -165,37 +163,55 @@ if uploaded_file is not None:
             elif "4." in selected_group:
                 sub_df = df_clean[df_clean['Status'].astype(str).str.contains("CERRADO|NO EXISTE", case=False, na=False)].copy()
             else:
-                sub_df = df_clean.copy()
+                sub_df = df_clean[~df_clean['Status'].astype(str).str.contains("VISITA|INTERESAD|SOLICITA|CREA|NUEVO|COMPRA|CERRADO|NO EXISTE", case=False, na=False)].copy()
             
-            # Limitar muestra para procesamiento rápido en la versión ligera
-            sub_df = sub_df.head(25).reset_index(drop=True)
-            
-            lats, lons, precs = [], [], []
-            for idx, r in sub_df.iterrows():
-                lat, lon, prec = geocode_address(str(r['Direccion']))
-                lats.append(lat)
-                lons.append(lon)
-                precs.append(prec)
-                time.sleep(0.2) # Pausa amigable para API gratuita
-                
-            # Nombres obligatorios en minúsculas para Streamlit map
-            sub_df['latitude'] = pd.to_numeric(lats, errors='coerce')
-            sub_df['longitude'] = pd.to_numeric(lons, errors='coerce')
-            sub_df['Precisión_GPS'] = precs
-            
-            # Ordenamiento óptimo
-            df_opt = optimize_route_order(sub_df)
-            
-            # Filtrar filas válidas para el mapa
-            df_mapa = df_opt.dropna(subset=['latitude', 'longitude'])
-            
-            if not df_mapa.empty:
-                st.markdown("### 🗺️ Mapa de la Ruta Óptima Ordenada")
-                st.map(df_mapa[['latitude', 'longitude']])
+            if len(sub_df) == 0:
+                st.warning("No se encontraron registros para el grupo seleccionado.")
             else:
-                st.warning("No se encontraron coordenadas válidas para desplegar en el mapa.")
-            
-            st.markdown("### 📋 Hoja de Ruta Secuencial Ordenada por Cercanía")
-            st.dataframe(df_opt[['Orden_Secuencial', 'Nombre', 'Direccion', 'Status', 'Precisión_GPS']])
+                # 2. Geolocalización de los clientes del grupo seleccionado
+                lats, lons, precs = [], [], []
+                for idx, r in sub_df.iterrows():
+                    lat, lon, prec = geocode_address(str(r['Direccion']))
+                    lats.append(lat)
+                    lons.append(lon)
+                    precs.append(prec)
+                    time.sleep(0.15)
+                    
+                sub_df['latitude'] = pd.to_numeric(lats, errors='coerce')
+                sub_df['longitude'] = pd.to_numeric(lons, errors='coerce')
+                sub_df['Precisión_GPS'] = precs
+                
+                # 3. Ordenamiento secuencial por cercanía (TSP)
+                df_opt = optimize_route_order(sub_df)
+                
+                # Crear etiqueta identificadora para mapa y tabla
+                df_opt['Etiqueta_Cliente'] = (
+                    "#" + df_opt['Orden_Secuencial'].astype(str) + " - " + 
+                    df_opt['Nombre'].astype(str) + " (" + df_opt['Direccion'].astype(str) + ")"
+                )
+                
+                st.markdown(f"### 📍 Mapa de Ruta Interactivo ({len(df_opt)} Clientes Filtrados)")
+                st.write("Haz clic sobre las casillas o usa la lista para identificar cada cliente:")
+                
+                # Mostrar tabla / selección
+                st.map(df_opt[['latitude', 'longitude']])
+                
+                st.markdown("### 📋 Hoja de Ruta Secuencial (Ordenada por Cercanía)")
+                st.dataframe(
+                    df_opt[[
+                        'Orden_Secuencial', 
+                        'Nombre', 
+                        'Direccion', 
+                        'Status', 
+                        'Precisión_GPS',
+                        'latitude',
+                        'longitude'
+                    ]].rename(columns={
+                        'Orden_Secuencial': 'Orden Visita',
+                        'latitude': 'Latitud GPS',
+                        'longitude': 'Longitud GPS'
+                    }),
+                    use_container_width=True
+                )
 else:
     st.info("Por favor sube el archivo Excel para comenzar el proceso de geolocalización.")
