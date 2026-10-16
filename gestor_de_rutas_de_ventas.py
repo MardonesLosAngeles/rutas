@@ -5,6 +5,7 @@ import urllib.request
 import urllib.parse
 import json
 import time
+import re
 
 st.set_page_config(
     page_title="Gestor de Rutas Georreferenciadas - Los Ángeles",
@@ -13,9 +14,28 @@ st.set_page_config(
 )
 
 st.title("🗺️ Optimización de Rutas de Ventas por Geolocalización")
-st.subheader("Los Ángeles, Chile)")
+st.subheader("Los Ángeles, Chile — Motor de Ruta Óptima (TSP + Geolocalización Gratuita)")
 
-# --- FUNCIONES DE GEOLOCALIZACIÓN Y OPTIMIZACIÓN ---
+# --- FUNCIONES DE LIMPIEZA Y GEOLOCALIZACIÓN ---
+
+def clean_address_text(address_raw):
+    """
+    Limpia y depura el texto de la dirección del Excel para mejorar 
+    la geolocalización en Los Ángeles.
+    """
+    if not isinstance(address_raw, str):
+        return ""
+    
+    text = address_raw.upper()
+    # Eliminar notas entre paréntesis ej. (MAQ.CONS)
+    text = re.sub(r'\(.*?\)', '', text)
+    # Eliminar textos de villas o poblaciones después de la coma
+    text = re.sub(r',.*', '', text)
+    # Reemplazar abreviaturas comunes como N., NN., #, POB., VILLA
+    text = re.sub(r'\b(N°|NN\.|N\.|#|POB\.|VILLA|SECTOR)\b', '', text)
+    # Limpiar espacios múltiples
+    text = " ".join(text.split())
+    return text
 
 @st.cache_data(show_spinner=False)
 def geocode_address(address_str, city="Los Angeles", country="Chile"):
@@ -23,8 +43,8 @@ def geocode_address(address_str, city="Los Angeles", country="Chile"):
     Obtiene coordenadas Lat/Lon usando Nominatim (OpenStreetMap)
     con estrategia de fallback por calle si el número no es encontrado.
     """
-    clean_addr = address_str.split(',')[0].strip() # Limpia texto de villa o pasajes extra
-    full_query = f"{clean_addr}, {city}, {country}"
+    cleaned_street = clean_address_text(address_str)
+    full_query = f"{cleaned_street}, {city}, {country}"
     
     url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
         'q': full_query,
@@ -42,8 +62,8 @@ def geocode_address(address_str, city="Los Angeles", country="Chile"):
     except Exception:
         pass
     
-    # Fallback: Intentar con la calle principal
-    street_words = [w for w in clean_addr.split() if not w.isdigit()]
+    # Fallback: Intentar con el nombre de la calle sin número
+    street_words = [w for w in cleaned_street.split() if not w.isdigit()]
     street_query = " ".join(street_words)
     if street_query:
         fallback_query = f"{street_query}, {city}, {country}"
@@ -87,8 +107,8 @@ def optimize_route_order(df_subset):
     
     current_idx = 0
     while len(ordered_indices) < len(unvisited):
-        last_lat = unvisited.loc[current_idx, 'Latitud']
-        last_lon = unvisited.loc[current_idx, 'Longitud']
+        last_lat = unvisited.loc[current_idx, 'latitude']
+        last_lon = unvisited.loc[current_idx, 'longitude']
         
         min_dist = float('inf')
         next_idx = None
@@ -97,7 +117,7 @@ def optimize_route_order(df_subset):
             if idx not in ordered_indices:
                 dist = calculate_haversine_distance(
                     last_lat, last_lon,
-                    unvisited.loc[idx, 'Latitud'], unvisited.loc[idx, 'Longitud']
+                    unvisited.loc[idx, 'latitude'], unvisited.loc[idx, 'longitude']
                 )
                 if dist < min_dist:
                     min_dist = dist
@@ -126,7 +146,12 @@ if uploaded_file is not None:
     st.success(f"✅ Archivo cargado correctamente ({len(df_clean)} clientes encontrados).")
     
     # Filtro de Grupo
-    grupos = ["1. Ruta Prioritaria (2ª Visita / Interesados)", "2. Nuevos con Compra", "3. Resto de Clientes", "4. Locales Cerrados"]
+    grupos = [
+        "1. Ruta Prioritaria (2ª Visita / Interesados)", 
+        "2. Nuevos con Compra", 
+        "3. Resto de Clientes", 
+        "4. Locales Cerrados"
+    ]
     selected_group = st.selectbox("Selecciona el Grupo de Clientes a Georreferenciar y Optimizar:", grupos)
     
     if st.button("🚀 Georreferenciar y Calcular Ruta Óptima"):
@@ -142,7 +167,7 @@ if uploaded_file is not None:
             else:
                 sub_df = df_clean.copy()
             
-            # Limitar para prueba rápida en interfaz
+            # Limitar muestra para procesamiento rápido en la versión ligera
             sub_df = sub_df.head(25).reset_index(drop=True)
             
             lats, lons, precs = [], [], []
@@ -153,15 +178,22 @@ if uploaded_file is not None:
                 precs.append(prec)
                 time.sleep(0.2) # Pausa amigable para API gratuita
                 
-            sub_df['Latitud'] = lats
-            sub_df['Longitud'] = lons
+            # Nombres obligatorios en minúsculas para Streamlit map
+            sub_df['latitude'] = pd.to_numeric(lats, errors='coerce')
+            sub_df['longitude'] = pd.to_numeric(lons, errors='coerce')
             sub_df['Precisión_GPS'] = precs
             
             # Ordenamiento óptimo
             df_opt = optimize_route_order(sub_df)
             
-            st.markdown("### 🗺️ Mapa de la Ruta Óptima Ordenada")
-            st.map(df_opt[['Latitud', 'Longitud']])
+            # Filtrar filas válidas para el mapa
+            df_mapa = df_opt.dropna(subset=['latitude', 'longitude'])
+            
+            if not df_mapa.empty:
+                st.markdown("### 🗺️ Mapa de la Ruta Óptima Ordenada")
+                st.map(df_mapa[['latitude', 'longitude']])
+            else:
+                st.warning("No se encontraron coordenadas válidas para desplegar en el mapa.")
             
             st.markdown("### 📋 Hoja de Ruta Secuencial Ordenada por Cercanía")
             st.dataframe(df_opt[['Orden_Secuencial', 'Nombre', 'Direccion', 'Status', 'Precisión_GPS']])
